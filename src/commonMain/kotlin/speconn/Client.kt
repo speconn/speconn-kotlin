@@ -7,6 +7,10 @@ import io.ktor.http.*
 import io.ktor.utils.io.*
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.serializer
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 data class CallOptions(val headers: Map<String, String> = emptyMap())
 
@@ -102,13 +106,12 @@ internal suspend fun <Req, Res> streamCallImpl(
         val (flags, payload) = decodeEnvelope(resp.body, offset) ?: break
         offset += 5 + payload.size
         if (flags and FLAG_END_STREAM != 0) {
-            val trailer = json.decodeFromString<Map<String, Any?>>(
-                payload.decodeToString()
-            )
-            val err = trailer["error"] as? Map<*, *>
-            if (err != null) throw SpeconnError(
-                err["code"] as? String ?: Codes.UNKNOWN,
-                err["message"] as? String ?: ""
+            val trailerText = payload.decodeToString()
+            val trailer = json.decodeFromString<JsonObject>(trailerText)
+            val errObj = trailer["error"]?.jsonObject
+            if (errObj != null) throw SpeconnError(
+                errObj["code"]?.jsonPrimitive?.content ?: Codes.UNKNOWN,
+                errObj["message"]?.jsonPrimitive?.content ?: ""
             )
             break
         }
