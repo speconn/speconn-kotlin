@@ -1,0 +1,12 @@
+FROM dhi.io/gradle:9-jdk25-alpine3.23-dev AS builder
+WORKDIR /app
+COPY build.gradle.kts settings.gradle.kts ./
+COPY src/ src/
+RUN --mount=type=cache,target=/root/.gradle/caches \
+    --mount=type=cache,target=/root/.gradle/wrapper \
+    --mount=type=cache,target=/root/.konan \
+    gradle jvmJar --no-daemon -q && \
+    gradle compileKotlinLinuxX64 --no-daemon -q
+
+FROM scratch
+COPY --from=builder /app/build/libs/ /out/
