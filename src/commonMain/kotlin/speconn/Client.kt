@@ -10,13 +10,6 @@ import kotlinx.serialization.serializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-
-data class CallOptions(val headers: Map<String, String> = emptyMap())
-
-fun withHeader(key: String, value: String) = CallOptions(headers = mapOf(key to value))
-
-fun withHeaders(headers: Map<String, String>) = CallOptions(headers = headers)
 
 @PublishedApi
 internal class KtorTransport(
@@ -51,14 +44,18 @@ class UnaryClient(
     constructor(url: String, httpClient: HttpClient) : this(url, KtorTransport(httpClient))
 
     suspend inline fun <reified Req, reified Res> call(
-        path: String, req: Req, options: CallOptions = CallOptions()
+        path: String,
+        req: Req,
+        headers: Map<String, String> = emptyMap()
     ): Res =
-        unaryCallImpl(transport, baseUrl, path, req, serializer<Req>(), serializer<Res>(), options)
+        unaryCallImpl(transport, baseUrl, path, req, serializer<Req>(), serializer<Res>(), headers)
 
     suspend inline fun <reified Req, reified Res> stream(
-        path: String, req: Req, options: CallOptions = CallOptions()
+        path: String,
+        req: Req,
+        headers: Map<String, String> = emptyMap()
     ): List<Res> =
-        streamCallImpl(transport, baseUrl, path, req, serializer<Req>(), serializer<Res>(), options)
+        streamCallImpl(transport, baseUrl, path, req, serializer<Req>(), serializer<Res>(), headers)
 }
 
 @PublishedApi
@@ -69,11 +66,11 @@ internal suspend fun <Req, Res> unaryCallImpl(
     req: Req,
     reqSer: KSerializer<Req>,
     resSer: KSerializer<Res>,
-    options: CallOptions
+    headers: Map<String, String>
 ): Res {
     val url = baseUrl.trimEnd('/') + path
     val body = json.encodeToString(reqSer, req)
-    val resp = transport.call(url, "application/json", options.headers, body)
+    val resp = transport.call(url, "application/json", headers, body)
     val text = resp.body.decodeToString()
     if (resp.status != 200) throw parseError(text)
     return json.decodeFromString(resSer, text)
@@ -87,14 +84,14 @@ internal suspend fun <Req, Res> streamCallImpl(
     req: Req,
     reqSer: KSerializer<Req>,
     resSer: KSerializer<Res>,
-    options: CallOptions
+    headers: Map<String, String>
 ): List<Res> {
     val url = baseUrl.trimEnd('/') + path
     val body = json.encodeToString(reqSer, req)
     val resp = transport.call(
         url,
         "application/connect+json",
-        mapOf("Connect-Protocol-Version" to "1") + options.headers,
+        mapOf("Connect-Protocol-Version" to "1") + headers,
         body
     )
     if (resp.status != 200) {
@@ -106,8 +103,7 @@ internal suspend fun <Req, Res> streamCallImpl(
         val (flags, payload) = decodeEnvelope(resp.body, offset) ?: break
         offset += 5 + payload.size
         if (flags and FLAG_END_STREAM != 0) {
-            val trailerText = payload.decodeToString()
-            val trailer = json.decodeFromString<JsonObject>(trailerText)
+            val trailer = json.decodeFromString<JsonObject>(payload.decodeToString())
             val errObj = trailer["error"]?.jsonObject
             if (errObj != null) throw SpeconnError(
                 errObj["code"]?.jsonPrimitive?.content ?: Codes.UNKNOWN,
