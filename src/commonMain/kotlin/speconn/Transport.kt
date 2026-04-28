@@ -1,16 +1,19 @@
 package speconn
 
-class TransportResponse(
-    val status: Int,
+data class HttpRequest(
+    val url: String,
+    val method: String,
     val headers: Map<String, String>,
-    val body: ByteArray
+    val body: ByteArray,
 )
 
-interface Transport {
-    suspend fun call(
-        url: String,
-        contentType: String,
-        headers: Map<String, String>,
-        body: String
-    ): TransportResponse
+data class HttpResponse(
+    val status: Int,
+    val headers: Map<String, String>,
+    val body: ByteArray,
+)
+
+/** HttpClient is the interface Speconn expects HTTP clients to implement. */
+interface HttpClient {
+    suspend fun send(request: HttpRequest): HttpResponse
 }

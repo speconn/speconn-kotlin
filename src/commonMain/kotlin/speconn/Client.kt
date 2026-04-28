@@ -11,66 +11,61 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@PublishedApi
-internal class KtorTransport(
-    @PublishedApi internal val httpClient: HttpClient
-) : Transport {
-
-    override suspend fun call(
-        url: String,
-        contentType: String,
-        headers: Map<String, String>,
-        body: String
-    ): TransportResponse {
-        val response = httpClient.post(url) {
-            this.contentType(ContentType.parse(contentType))
-            for ((k, v) in headers) header(k, v)
-            setBody(body)
+/** Default HttpClient implementation using Ktor CIO. */
+class KtorHttpClient(private val httpClient: HttpClient_) : speconn.HttpClient {
+    override suspend fun send(request: HttpRequest): HttpResponse {
+        val response = httpClient.request(request.url) {
+            method = HttpMethod.Post
+            for ((k, v) in request.headers) header(k, v)
+            setBody(request.body)
         }
-        return TransportResponse(
-            response.status.value,
-            response.headers.names().associateWith { name ->
+        val body = readAllBytes(response.bodyAsChannel())
+        return HttpResponse(
+            status = response.status.value,
+            headers = response.headers.names().associateWith { name ->
                 response.headers.getAll(name)?.joinToString(", ") ?: ""
             },
-            readAllBytes(response.bodyAsChannel())
+            body = body,
         )
     }
 }
 
+// Type alias to avoid conflict with speconn.HttpClient
+private typealias HttpClient_ = io.ktor.client.HttpClient
+
 class UnaryClient(
     @PublishedApi internal val baseUrl: String,
-    @PublishedApi internal val transport: Transport
+    @PublishedApi internal val httpClient: speconn.HttpClient,
 ) {
-    constructor(url: String, httpClient: HttpClient) : this(url, KtorTransport(httpClient))
+    constructor(url: String, ktorClient: io.ktor.client.HttpClient) : this(url, KtorHttpClient(ktorClient))
 
     suspend inline fun <reified Req, reified Res> call(
         path: String,
         req: Req,
-        headers: Map<String, String> = emptyMap()
-    ): Res =
-        unaryCallImpl(transport, baseUrl, path, req, serializer<Req>(), serializer<Res>(), headers)
+        headers: Map<String, String> = emptyMap(),
+    ): Res = unaryCallImpl(httpClient, baseUrl, path, req, serializer<Req>(), serializer<Res>(), headers)
 
     suspend inline fun <reified Req, reified Res> stream(
         path: String,
         req: Req,
-        headers: Map<String, String> = emptyMap()
-    ): List<Res> =
-        streamCallImpl(transport, baseUrl, path, req, serializer<Req>(), serializer<Res>(), headers)
+        headers: Map<String, String> = emptyMap(),
+    ): List<Res> = streamCallImpl(httpClient, baseUrl, path, req, serializer<Req>(), serializer<Res>(), headers)
 }
 
 @PublishedApi
 internal suspend fun <Req, Res> unaryCallImpl(
-    transport: Transport,
+    httpClient: speconn.HttpClient,
     baseUrl: String,
     path: String,
     req: Req,
     reqSer: KSerializer<Req>,
     resSer: KSerializer<Res>,
-    headers: Map<String, String>
+    headers: Map<String, String>,
 ): Res {
     val url = baseUrl.trimEnd('/') + path
-    val body = json.encodeToString(reqSer, req)
-    val resp = transport.call(url, "application/json", headers, body)
+    val body = json.encodeToString(reqSer, req).encodeToByteArray()
+    val reqHeaders = mapOf("content-type" to "application/json") + headers
+    val resp = httpClient.send(HttpRequest(url = url, method = "POST", headers = reqHeaders, body = body))
     val text = resp.body.decodeToString()
     if (resp.status != 200) throw parseError(text)
     return json.decodeFromString(resSer, text)
@@ -78,25 +73,23 @@ internal suspend fun <Req, Res> unaryCallImpl(
 
 @PublishedApi
 internal suspend fun <Req, Res> streamCallImpl(
-    transport: Transport,
+    httpClient: speconn.HttpClient,
     baseUrl: String,
     path: String,
     req: Req,
     reqSer: KSerializer<Req>,
     resSer: KSerializer<Res>,
-    headers: Map<String, String>
+    headers: Map<String, String>,
 ): List<Res> {
     val url = baseUrl.trimEnd('/') + path
-    val body = json.encodeToString(reqSer, req)
-    val resp = transport.call(
-        url,
-        "application/connect+json",
-        mapOf("Connect-Protocol-Version" to "1") + headers,
-        body
-    )
-    if (resp.status != 200) {
-        throw SpeconnError(Codes.UNKNOWN, resp.body.decodeToString())
-    }
+    val body = json.encodeToString(reqSer, req).encodeToByteArray()
+    val reqHeaders = mapOf(
+        "content-type" to "application/connect+json",
+        "Connect-Protocol-Version" to "1",
+    ) + headers
+    val resp = httpClient.send(HttpRequest(url = url, method = "POST", headers = reqHeaders, body = body))
+    if (resp.status != 200) throw SpeconnError(Codes.UNKNOWN, resp.body.decodeToString())
+
     val messages = mutableListOf<Res>()
     var offset = 0
     while (offset < resp.body.size) {
@@ -107,7 +100,7 @@ internal suspend fun <Req, Res> streamCallImpl(
             val errObj = trailer["error"]?.jsonObject
             if (errObj != null) throw SpeconnError(
                 errObj["code"]?.jsonPrimitive?.content ?: Codes.UNKNOWN,
-                errObj["message"]?.jsonPrimitive?.content ?: ""
+                errObj["message"]?.jsonPrimitive?.content ?: "",
             )
             break
         }
