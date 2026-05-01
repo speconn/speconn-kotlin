@@ -7,7 +7,7 @@ data class HttpRequest(
     val body: ByteArray,
 ) {
     override fun equals(other: Any?) = this === other
-    override fun hashCode() = System.identityHashCode(this)
+    override fun hashCode(): Int = super.hashCode()
 }
 
 data class HttpResponse(
@@ -15,7 +15,7 @@ data class HttpResponse(
     val body: ByteArray,
 ) {
     override fun equals(other: Any?) = this === other
-    override fun hashCode() = System.identityHashCode(this)
+    override fun hashCode(): Int = super.hashCode()
 }
 
 interface SpeconnTransport {

@@ -1,7 +1,10 @@
 package speconn
 
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import specodec.dispatch
+import specodec.respond
+import specodec.SpecCodec
+import specodec.SpecWriter
+import specodec.SpecReader
 
 object Codes {
     const val CANCELED = "canceled"
@@ -22,7 +25,6 @@ object Codes {
     const val UNAUTHENTICATED = "unauthenticated"
 }
 
-@Serializable
 data class SpeconnError(
     val code: String,
     override val message: String
@@ -36,10 +38,6 @@ data class SpeconnError(
     }
 }
 
-@PublishedApi
-internal val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-
-@PublishedApi
 internal fun codeToHttpStatus(code: String): Int = when (code) {
     Codes.CANCELED -> 499
     Codes.UNKNOWN -> 500
@@ -60,7 +58,6 @@ internal fun codeToHttpStatus(code: String): Int = when (code) {
     else -> 500
 }
 
-@PublishedApi
 internal fun httpStatusToCode(status: Int): String = when (status) {
     400 -> Codes.INVALID_ARGUMENT
     401 -> Codes.UNAUTHENTICATED
@@ -76,5 +73,30 @@ internal fun httpStatusToCode(status: Int): String = when (status) {
     else -> Codes.UNKNOWN
 }
 
-@PublishedApi
-internal fun parseError(body: String): SpeconnError = json.decodeFromString(body)
+private val _errorCodec: SpecCodec<SpeconnError> = SpecCodec(
+    encode = { w, obj ->
+        w.beginObject(2)
+        w.writeField("code");    w.writeString(obj.code)
+        w.writeField("message"); w.writeString(obj.message)
+        w.endObject()
+    },
+    decode = { r ->
+        var code = Codes.UNKNOWN; var message = ""
+        r.beginObject()
+        while (r.hasNextField()) {
+            when (r.readFieldName()) {
+                "code"    -> code = r.readString()
+                "message" -> message = r.readString()
+                else      -> r.skip()
+            }
+        }
+        r.endObject()
+        SpeconnError(code, message)
+    }
+)
+
+internal fun SpeconnError.encode(fmt: String): ByteArray = respond(_errorCodec, this, fmt).body
+
+internal fun decodeError(payload: ByteArray, fmt: String): SpeconnError =
+    try { dispatch(_errorCodec, payload, fmt) }
+    catch (_: Exception) { SpeconnError(Codes.UNKNOWN, "decode error") }
