@@ -12,6 +12,7 @@ data class HttpRequest(
 
 data class HttpResponse(
     val status: Int,
+    val headers: List<Pair<String, String>>,
     val body: ByteArray,
 ) {
     override fun equals(other: Any?) = this === other

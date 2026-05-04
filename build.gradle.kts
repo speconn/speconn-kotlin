@@ -2,7 +2,7 @@ plugins {
     kotlin("multiplatform") version "2.3.21"
 }
 
-group = "speconn"
+group = "speconn-runtime-kotlin"
 version = "0.1.0"
 
 repositories {

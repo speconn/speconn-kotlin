@@ -3,6 +3,53 @@ package speconn
 import specodec.SpecCodec
 import specodec.dispatch
 import specodec.respond
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+
+data class CallOptions(
+    val headers: Map<String, String> = emptyMap(),
+    val timeoutMs: Long? = null,
+)
+
+data class Response<T>(
+    val msg: T,
+    val headers: Map<String, String>,
+    val trailers: Map<String, String>,
+)
+
+class StreamResponse<T>(
+    val headers: Map<String, String>,
+) {
+    var trailers: Map<String, String> = emptyMap()
+    internal val msgs = mutableListOf<T>()
+
+    fun asFlow(): Flow<T> = flow {
+        for (msg in msgs) {
+            emit(msg)
+        }
+    }
+
+    internal fun addMsg(msg: T) {
+        msgs.add(msg)
+    }
+
+    internal fun setTrailers(t: Map<String, String>) {
+        trailers = t
+    }
+}
+
+fun splitHeadersTrailers(rawHeaders: List<Pair<String, String>>): Pair<Map<String, String>, Map<String, String>> {
+    val headers = mutableMapOf<String, String>()
+    val trailers = mutableMapOf<String, String>()
+    for ((k, v) in rawHeaders) {
+        if (k.lowercase().startsWith("trailer-")) {
+            trailers[k.substring(8)] = v
+        } else {
+            headers[k.lowercase()] = v
+        }
+    }
+    return headers to trailers
+}
 
 class SpeconnClient(
     private val url: String,
@@ -24,23 +71,27 @@ class SpeconnClient(
         reqCodec: SpecCodec<T>,
         req: T,
         resCodec: SpecCodec<T>,
-        headers: Map<String, String> = emptyMap(),
-    ): T {
+        options: CallOptions = CallOptions(),
+    ): Response<T> {
+        val headers = options.headers
         val reqFmt = extractFormat(getContentType(headers))
         val resFmt = extractFormat(getAccept(headers))
         val body = respond(reqCodec, req, reqFmt).body
         val resp = transport.send(HttpRequest(url = url, method = "POST",
             headers = headers.entries.map { it.key to it.value }, body = body))
         if (resp.status >= 400) throw decodeError(resp.body, "json")
-        return dispatch(resCodec, resp.body, resFmt)
+        val (respHeaders, respTrailers) = splitHeadersTrailers(resp.headers)
+        val msg = dispatch(resCodec, resp.body, resFmt)
+        return Response(msg, respHeaders, respTrailers)
     }
 
     suspend fun <T> stream(
         reqCodec: SpecCodec<T>,
         req: T,
         resCodec: SpecCodec<T>,
-        headers: Map<String, String> = emptyMap(),
-    ): List<T> {
+        options: CallOptions = CallOptions(),
+    ): StreamResponse<T> {
+        val headers = options.headers
         val reqFmt = extractFormat(getContentType(headers))
         val resFmt = extractFormat(getAccept(headers))
         val streamHeaders = if (!headers.keys.any { it.lowercase() == "connect-protocol-version" })
@@ -50,7 +101,9 @@ class SpeconnClient(
             headers = streamHeaders.entries.map { it.key to it.value }, body = body))
         if (resp.status >= 400) throw decodeError(resp.body, "json")
 
-        val results = mutableListOf<T>()
+        val (respHeaders, respTrailers) = splitHeadersTrailers(resp.headers)
+        val streamResp = StreamResponse<T>(respHeaders)
+
         var pos = 0
         while (pos < resp.body.size) {
             if (resp.body.size - pos < 5) break
@@ -66,8 +119,11 @@ class SpeconnClient(
                 if (payload.isNotEmpty()) throw decodeError(payload, resFmt)
                 break
             }
-            results.add(dispatch(resCodec, payload, resFmt))
+            val msg = dispatch(resCodec, payload, resFmt)
+            streamResp.addMsg(msg)
         }
-        return results
+
+        streamResp.setTrailers(respTrailers)
+        return streamResp
     }
 }

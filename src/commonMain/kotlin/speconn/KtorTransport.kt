@@ -15,7 +15,8 @@ class KtorTransport(private val client: HttpClient, private val ownsClient: Bool
             request.headers.forEach { (k, v) -> headers.append(k, v) }
             setBody(request.body)
         }
-        return HttpResponse(status = resp.status.value, body = resp.readRawBytes())
+        val respHeaders = resp.headers.entries().flatMap { (k, vs) -> vs.map { v -> Pair(k, v) } }
+        return HttpResponse(status = resp.status.value, headers = respHeaders, body = resp.readRawBytes())
     }
 
     override fun close() {
